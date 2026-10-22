@@ -15,6 +15,7 @@ import android.graphics.drawable.Drawable;
 import android.text.TextPaint;
 import android.text.TextUtils;
 import android.util.TypedValue;
+import android.view.View;
 import android.view.Gravity;
 import android.widget.FrameLayout;
 import android.widget.TextView;
@@ -25,12 +26,16 @@ import androidx.annotation.RawRes;
 import androidx.annotation.StringRes;
 import androidx.core.graphics.ColorUtils;
 import androidx.core.math.MathUtils;
+import androidx.dynamicanimation.animation.DynamicAnimation;
+import androidx.dynamicanimation.animation.SpringAnimation;
+import androidx.dynamicanimation.animation.SpringForce;
 
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ContactsController;
 import org.telegram.messenger.DocumentObject;
 import org.telegram.messenger.ImageLocation;
 import org.telegram.messenger.LocaleController;
+import org.telegram.messenger.MaterialYou;
 import org.telegram.messenger.MediaDataController;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.R;
@@ -63,12 +68,17 @@ public class GlassTabView extends FrameLayout implements MainTabsLayout.Tab, Fac
     private static final int ANIMATOR_ID_IS_SELECTED = 0;
     private static final int ANIMATOR_ID_COUNTER_VISIBLE = 1;
     private static final int ANIMATOR_ID_COUNTER_ERROR = 2;
+    private static final int ANIMATOR_ID_INDICATOR = 3;
 
     private final BoolAnimator isSelectedAnimator = new BoolAnimator(ANIMATOR_ID_IS_SELECTED, this, AnimatorUtils.DECELERATE_INTERPOLATOR, 320);
-    private final BoolAnimator isHasCounterAnimator = new BoolAnimator(ANIMATOR_ID_COUNTER_VISIBLE, this, CubicBezierInterpolator.EASE_OUT_QUINT, 380);
+    // Material You: the indicator uses an expressive spring-like curve with overshoot
+    private final BoolAnimator indicatorAnimator = new BoolAnimator(ANIMATOR_ID_INDICATOR, this, CubicBezierInterpolator.EASE_OUT_BACK, 560);
+    private final BoolAnimator isHasCounterAnimator = new BoolAnimator(ANIMATOR_ID_COUNTER_VISIBLE, this, CubicBezierInterpolator.EASE_OUT_BACK, 520);
     private final BoolAnimator isHasCounterErrorAnimator = new BoolAnimator(ANIMATOR_ID_COUNTER_ERROR, this, CubicBezierInterpolator.EASE_OUT_QUINT, 380);
     private int colorSelected;
     private int colorSelectedText;
+    private int colorIndicator;
+    private SpringAnimation iconHop, labelHop;
     private int colorDefault;
     private boolean usePremiumCounter;
 
@@ -151,7 +161,25 @@ public class GlassTabView extends FrameLayout implements MainTabsLayout.Tab, Fac
     protected void dispatchDraw(@NonNull Canvas canvas) {
         final float viewWidth = hasVisualWidth ? visualWidth : getWidth();
         final float selectedFactor = hasGestureSelectedOverride ? gestureSelectedOverride : isSelectedAnimator.getFloatValue();
-        if (selectedFactor > 0 && !skipDrawSelector) {
+        if (MaterialYou.isEnabled()) {
+            // Material You: secondary-container pill that grows from a small blob with overshoot,
+            // and stays a full pill (corner radius = half of the smaller side) while it grows.
+            final float f = hasGestureSelectedOverride ? gestureSelectedOverride : indicatorAnimator.getFloatValue();
+            if (f > 0.001f && !skipDrawSelector) {
+                final float alpha = MathUtils.clamp(f * 1.6f, 0f, 1f);
+                paintCounterBackground.setColor(Theme.multAlpha(colorIndicator, alpha));
+                final float h = getHeight();
+                final float fc = MathUtils.clamp(f, 0f, 1f);
+                final float sx = lerp(0.3f, 1f, fc) * MathUtils.clamp(attachScale, 0, 1);
+                final float sy = lerp(0.55f, 1f, fc) * MathUtils.clamp(attachScale, 0, 1);
+                final float w = viewWidth * sx;
+                final float hh = h * sy;
+                final float cx = viewWidth / 2f, cy = h / 2f;
+                tmpRectF.set(cx - w / 2f, cy - hh / 2f, cx + w / 2f, cy + hh / 2f);
+                final float rMax = Math.min(tmpRectF.width(), tmpRectF.height()) / 2f;
+                canvas.drawRoundRect(tmpRectF, rMax, rMax, paintCounterBackground);
+            }
+        } else if (selectedFactor > 0 && !skipDrawSelector) {
             final float alpha = AnimatorUtils.DECELERATE_INTERPOLATOR.getInterpolation(selectedFactor);
 
             paintCounterBackground.setColor(Theme.multAlpha(colorSelected, 0.09f * alpha));
@@ -205,7 +233,8 @@ public class GlassTabView extends FrameLayout implements MainTabsLayout.Tab, Fac
                 premiumStarDrawable.setBounds(x, y, x + dp(14), y + dp(14));
                 premiumStarDrawable.draw(canvas);
             } else {
-                paintCounterBackground.setColor(ColorUtils.blendARGB(Theme.getColor(Theme.key_telegram_color), Theme.getColor(Theme.key_fill_RedNormal), isHasCounterErrorAnimator.getFloatValue()));
+                final int counterColor = MaterialYou.isEnabled() ? MaterialYou.primaryColor(getContext()) : Theme.getColor(Theme.key_telegram_color);
+                paintCounterBackground.setColor(ColorUtils.blendARGB(counterColor, Theme.getColor(Theme.key_fill_RedNormal), isHasCounterErrorAnimator.getFloatValue()));
                 canvas.drawRoundRect(tmpRectF, rInner, rInner, paintCounterBackground);
                 counter.setBounds(tmpRectF);
                 counter.draw(canvas);
@@ -231,10 +260,32 @@ public class GlassTabView extends FrameLayout implements MainTabsLayout.Tab, Fac
     }
 
     public void setSelected(boolean selected, boolean animated) {
+        final boolean wasSelected = isSelectedAnimator.getValue();
         isSelectedAnimator.setValue(selected, animated);
+        indicatorAnimator.setValue(selected, animated);
+        if (animated && selected && !wasSelected && MaterialYou.isEnabled()) {
+            hop();
+        }
         checkPlayAnimation(animated);
 
         textView.setTypeface(selected ? AndroidUtilities.getTypeface(AndroidUtilities.TYPEFACE_ROBOTO_EXTRA_BOLD) : AndroidUtilities.bold());
+    }
+
+    /** Material You: the icon jumps up and settles back on a soft spring, the label follows a bit later. */
+    private void hop() {
+        final View icon = (backupImageView != null && imageView.getVisibility() == GONE) ? backupImageView : imageView;
+        if (iconHop == null) {
+            iconHop = new SpringAnimation(icon, DynamicAnimation.TRANSLATION_Y, 0f);
+            iconHop.setSpring(new SpringForce(0f).setStiffness(260f).setDampingRatio(0.32f));
+            labelHop = new SpringAnimation(textView, DynamicAnimation.TRANSLATION_Y, 0f);
+            labelHop.setSpring(new SpringForce(0f).setStiffness(200f).setDampingRatio(0.4f));
+        }
+        iconHop.cancel();
+        labelHop.cancel();
+        icon.setTranslationY(-dp(8));
+        textView.setTranslationY(dp(3));
+        iconHop.start();
+        labelHop.start();
     }
 
     public boolean isTabSelected() {
@@ -252,6 +303,12 @@ public class GlassTabView extends FrameLayout implements MainTabsLayout.Tab, Fac
     private boolean needUpdateBackupViewColor;
 
     private void updateColors() {
+        if (MaterialYou.isEnabled()) {
+            colorIndicator = MaterialYou.indicatorColor(getContext());
+            colorSelected = MaterialYou.onIndicatorColor(getContext());
+            colorSelectedText = colorSelected;
+            counter.setTextColor(MaterialYou.onPrimaryColor(getContext()));
+        }
         final int color = ColorUtils.blendARGB(colorDefault, colorSelected, isSelectedAnimator.getFloatValue());
         final int colorText = ColorUtils.blendARGB(colorDefault, colorSelectedText, isSelectedAnimator.getFloatValue());
 
