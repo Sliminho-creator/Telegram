@@ -37,18 +37,32 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build (arm64 only, to keep it fast)
+      - name: Build (arm64 + armv7)
         run: |
           ./gradlew :TMessagesProj_AppStandalone:assembleAfatStandalone \
-            -Pandroid.injected.build.abi=arm64-v8a \
+            -Pandroid.injected.build.abi=arm64-v8a,armeabi-v7a \
             --no-daemon --stacktrace
 
-      - name: Collect APK
+      - name: Collect, align, sign and verify APK
         run: |
-          mkdir -p out
+          set -eo pipefail
+          mkdir -p out work
           echo "--- all build outputs ---"
-          find . -path ./out -prune -o \( -name '*.apk' -o -name '*.aab' \) -print
-          find . -path ./out -prune -o -name '*.apk' -print0 | xargs -0 -I{} cp {} out/ || true
+          find . \( -path ./out -o -path ./work \) -prune -o \( -name '*.apk' -o -name '*.aab' \) -print -exec ls -la {} \;
+          APK=$(find TMessagesProj_AppStandalone/build/outputs/apk -name '*.apk' | head -1)
+          if [ -z "$APK" ]; then echo "No APK under build/outputs/apk"; exit 1; fi
+          echo "Using: $APK"
+          BT="$ANDROID_HOME/build-tools/36.0.0"
+          keytool -genkeypair -keystore work/myou.jks -storepass android -keypass android \
+            -alias myou -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=MaterialYou"
+          "$BT/zipalign" -f -p 4 "$APK" work/aligned.apk
+          "$BT/apksigner" sign --ks work/myou.jks --ks-pass pass:android --key-pass pass:android \
+            --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+            --out out/app.apk work/aligned.apk
+          echo "--- verify ---"
+          "$BT/apksigner" verify --verbose --print-certs out/app.apk | head -12
+          echo "--- badging ---"
+          "$BT/aapt2" dump badging out/app.apk | grep -E "^package|sdkVersion|targetSdk|native-code|uses-permission: name='android.permission.(INTERNET)'" | head
           ls -la out
 
       - uses: actions/upload-artifact@v4
