@@ -60,9 +60,9 @@ jobs:
             --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
             --out out/app.apk work/aligned.apk
           echo "--- verify ---"
-          "$BT/apksigner" verify --verbose --print-certs out/app.apk | head -12
+          "$BT/apksigner" verify --verbose --print-certs out/app.apk > work/verify.txt; head -12 work/verify.txt
           echo "--- badging ---"
-          "$BT/aapt2" dump badging out/app.apk | grep -E "^package|sdkVersion|targetSdk|native-code|uses-permission: name='android.permission.(INTERNET)'" | head
+          "$BT/aapt2" dump badging out/app.apk > work/badging.txt; grep -E "^package|sdkVersion|targetSdk|native-code" work/badging.txt || true
           ls -la out
 
       - uses: actions/upload-artifact@v4
